@@ -99,6 +99,7 @@ class PacketHandler:
             # check for new players
             try:
                 (conn, address) = self.socket.accept()
+                conn.setblocking(False)
                 self.enQueueMessage(Message.NewClientMessage(conn, "Jorma"), None)
             except socket.error:
                 pass
@@ -201,7 +202,7 @@ class Server:
             for p in self.players:
                 self.players[p].sendMessages()
 
-            time.sleep(0.01)
+            time.sleep(0.1)
 
     def stop(self, signum, frame):
         self.packethandler.stop = True
@@ -211,16 +212,3 @@ server = Server ()
 
 signal.signal(signal.SIGINT, server.stop)
 server.start()
-
-def createMonsters(areaMap):
-    return
-    for room in areaMap.rooms:
-        nummonsters = libtcod.random_get_int(0, 0, MAX_ROOM_MONSTERS)
-        for i in range(nummonsters):
-            x = libtcod.random_get_int(0, room.rect.x1, room.rect.x2)
-            y = libtcod.random_get_int(0, room.rect.y1, room.rect.y2)
-
-            if not areaMap.isBlocked(x,y):
-                combat_component = CombatObject(hp=10, defense=1, power=1, deathfunction=monster_death)
-                ai_component = BasicMonster()
-                areaMap.entities.append(Entity(x, y, 'o', libtcod.desaturated_green, 'orc', True, {'combat': combat_component, 'ai': ai_component}))

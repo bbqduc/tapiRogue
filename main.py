@@ -6,6 +6,15 @@ import threading
 import Queue
 import msgpack
 from io import BytesIO
+import message as Message
+from panels import TypingPanel, MessagePanel, StatusPanel
+import errno
+import tapirogueproperties as tapiRogueProperties
+import areamap
+from entity import Entity, CreateProperty
+
+
+##### ugly globals
 
 colors = { 'visible': {
         'wall': libtcod.Color(120, 110, 50),
@@ -24,367 +33,205 @@ COLOR_DARK_GROUND = libtcod.Color(50, 50, 150)
 COLOR_LIGHT_GROUND = libtcod.Color(200, 180, 50)
 TCP_RETRYCOUNT = 5
 
-MAX_ROOM_MONSTERS = 3
-
-FOV_ALGO = 0
-FOV_LIGHT_WALLS = True
-TORCH_RADIUS = 10
 
 SCREEN_WIDTH = 150
 SCREEN_HEIGHT = 60
 LIMIT_FPS = 20
 
-class TypingPanel:
+
+#######################################
+
+class Game:
     def __init__(self):
-        self.message = ""
-        self.x = 1
-        self.y = SCREEN_HEIGHT-2
-        self.width = SCREEN_WIDTH
-        self.height = 1
-        self.console = libtcod.console_new(self.width, self.height)
-        self.active = False
+        self.areamap = areamap.AreaMap(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.serverconnection = ServerConnection(self)
+        self.player = None
+        self.createWindow()
+        self.createPanels(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.messageconsumer = MessageConsumer(self.serverconnection.incomingmessages, self.serverconnection.outgoingmessages, self)
+        self.entities = {}
+    
+    def createWindow(self):
+        libtcod.console_init_root(SCREEN_WIDTH, SCREEN_HEIGHT, 'tapiRogue', False)
+        libtcod.sys_set_fps(LIMIT_FPS)
 
-    def handleKey(self, key):
-        if key.vk == libtcod.KEY_BACKSPACE and len(self.message) > 0:
-            self.message = self.message[:-1]
-            self.refreshMessage()
-        elif key.vk == libtcod.KEY_CHAR or key.c != 0:
-            self.message += chr(key.c)
-            self.refreshMessage()
+    def createPanels(self, width, height):
+        self.mainconsole = libtcod.console_new(SCREEN_WIDTH-20, SCREEN_HEIGHT-10)
+        self.msgpanel = MessagePanel(0, height-15, width/2, 10)
+        self.combatlog = MessagePanel(width/2+1, height-25, width/2, 20)
+        self.typingpanel = TypingPanel(width, height-2)
+
+    def handle_keys(self):
+        key = libtcod.console_check_for_keypress(True)
+
+        if key.vk == libtcod.KEY_ENTER:
+            if key.lalt:
+                libtcod.console_set_fullscreen(not libtcod.console_is_fullscreen())
+            elif self.typingpanel.active:
+                self.serverconnection.putMessageOutQueue(Message.ChatMessage(self.player.name, self.typingpanel.message))
+                self.typingpanel.message = ""
+                self.typingpanel.active = False
+                self.typingpanel.refreshMessage()
+            else:
+                self.typingpanel.active = True
+                self.typingpanel.refreshMessage()
+        elif key.vk == libtcod.KEY_ESCAPE:
+            if self.typingpanel.active:
+                self.typingpanel.active = False
+            else:
+                return True
+        elif self.typingpanel.active:
+            self.typingpanel.handleKey(key)
+            return False
+
+        xdir = 0
+        ydir = 0
+        
+        if libtcod.console_is_key_pressed(libtcod.KEY_UP):
+            ydir = -1
+        elif libtcod.console_is_key_pressed(libtcod.KEY_DOWN):
+            ydir = 1
+        elif libtcod.console_is_key_pressed(libtcod.KEY_LEFT):
+            xdir = -1
+        elif libtcod.console_is_key_pressed(libtcod.KEY_RIGHT):
+            xdir = 1
+
+        if not (xdir == 0 and ydir == 0):
+            self.serverconnection.putMessageOutQueue(Message.MovementMessage(xdir, ydir))
+#            self.player.move(self.areamap, xdir, ydir)
+#            self.areamap.recomputeLights(self.player)
+
+    def connect(self, ip, port):
+        self.serverconnection.connect(ip, port)
+        if not self.serverconnection.ok:
+            print 'Failed to connect to server.'
+            return
+        state = self.serverconnection.requestFullStateAndPlayerCharacter()
+        self.areamap.syncStaticsFromFullState(state)
+
+        self.waitForFullState = True
+        self.connectionthread = threading.Thread(target = self.serverconnection.run)
+        self.connectionthread.start()
+
+        print 'Static state synced.'
+
+        while self.waitForFullState:
+            time.sleep(0.01)
+            self.messageconsumer.handleMessages()
 
 
-    def refreshMessage(self):
-        libtcod.console_set_default_foreground(self.console, libtcod.white)
-        libtcod.console_print_ex(self.console, 1, 0, libtcod.BKGND_NONE, libtcod.LEFT, ('{0: <' + str(self.width) + '}').format(self.message))
-        if self.active:
-            libtcod.console_put_char(self.console, 1+len(self.message), 0, '_', libtcod.BKGND_NONE)
-        else:
-            libtcod.console_put_char(self.console, 1+len(self.message), 0, ' ', libtcod.BKGND_NONE)
+        self.messageconsumer.handleMessages()
+        self.statuspanel = StatusPanel(self.player, self.areamap.width-11, 3)
+        self.run()
 
-    def display(self):
-        libtcod.console_blit(self.console, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, self.x, self.y)
+    def fullSync(state):
+        self.areamap.syncStaticsFromFullState(state)
+        self.syncEntitiesFromFullState(state)
 
-class StatusPanel:
-    def __init__(self, player):
-        self.player = player
-        self.x = SCREEN_WIDTH-11
-        self.y = 3
-        self.width = 10
-        self.height = 10
-        self.console = libtcod.console_new(self.width, self.height)
+    def syncEntitiesFromFullState(self, state):
+#        print 'Got state :' + str(state)
+        self.entities = {}
+        for en in state['entities']:
+            e = state['entities'][en]
+            newe = Entity(e['x'], e['y'], e['char'], libtcod.Color(e['color_r'], e['color_g'], e['color_b']), e['name'], en)
+            for p in e['properties']:
+                newe.properties[p] = CreateProperty(p, e['properties'][p], self)
+            self.entities[en] = newe
 
-    def display(self):
-        libtcod.console_set_default_foreground(self.console, libtcod.white)
+        self.player = self.entities[state['playerid']]
+        self.areamap.recomputeLights(self.player)
+        self.waitForFullState = False
+
+    def run(self):
+        while not libtcod.console_is_window_closed():
+            libtcod.console_set_default_foreground(self.mainconsole, libtcod.white)
+
+            self.messageconsumer.handleMessages()
+
+            self.render_all()
+            libtcod.console_blit(self.mainconsole, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0)
+            self.combatlog.display()
+            self.msgpanel.display()
+            self.statuspanel.display()
+            self.typingpanel.display()
+            libtcod.console_flush()
+
+            for e in self.entities:
+                self.entities[e].clear(self.mainconsole) # clear moving objects last position
+
+            exit = self.handle_keys()
+            if exit:
+                break
+
+            time.sleep(0.01)
+
+#            for o in self.mapdata.entities: # todo : server logic
+#                if o != self.player and 'basicai' in o.properties:
+#                    o.properties['basicai'].takeTurn(mapdata, player) # TODO : timeout for monster
+        self.serverconnection.stop = True
+        self.connectionthread.join
+
+        self.serverconnection.disconnect()
+
+
+    def render_all(self):
+        for e in self.entities:
+            self.entities[e].draw(self.areamap.fovMap, self.mainconsole)
+        for y in range(self.areamap.height):
+            for x in range(self.areamap.width):
+                key1 = 'dark'
+                key2 = 'ground'
+                if libtcod.map_is_in_fov(self.areamap.fovMap, x, y):
+                    key1 = 'visible' 
+                    self.areamap.tiles[x][y].explored = True
+
+                if self.areamap.tiles[x][y].block_sight: 
+                    key2 = 'wall'
+
+                if self.areamap.tiles[x][y].explored:
+                    libtcod.console_set_char_background(self.mainconsole, x, y, colors[key1][key2], libtcod.BKGND_SET)
+        self.player.draw(self.areamap.fovMap, self.mainconsole)
+
+
+    def show_status(self, con):
+        libtcod.console_set_default_foreground(con, libtcod.white)
         hptext = "Dead."
         if self.player.properties['combat'] is not None:
             hptext = 'HP: ' + str(self.player.properties['combat'].hp) + '/' + str(self.player.properties['combat'].max_hp)
-        libtcod.console_print_ex(self.console, 1, 0, libtcod.BKGND_NONE, libtcod.LEFT, ('{0: <' + str(self.width) + '}').format(hptext))
-        libtcod.console_blit(self.console, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, self.x, self.y)
+        libtcod.console_print_ex(con, 1, 0, libtcod.BKGND_NONE, libtcod.LEFT,
+                hptext)
 
-class MessagePanel:
-    def __init__(self, x, y, width, height):
-        self.x = x
-        self.y = y
-        self.console = libtcod.console_new(width, height)
-        self.lines = []
-        self.width = width
-        self.height = height
+    def displayKillMessage(self, killed, killer):
+        self.combatlog.appendMessage(killer.capitalize() + " killed " + killed + "!")
 
-    def repaintMessages(self):
-        j=0
-        for i in self.lines:
-            libtcod.console_print_ex(self.console, 1, j, libtcod.BKGND_NONE, libtcod.LEFT, ('{0: <' + str(self.width) + '}').format(i))
-            j += 1
+    def player_death(self, player, killer):
+        self.displayKillMessage(player.name, killer.name)
+        print 'You died!'
+        player.char = '%'
+        player.color = libtcod.dark_red
+        player.properties['combat'] = None
 
-    def appendMessage(self, msg): # TODO : compact repeating messages with (x16) etc, necessary?, concurrency
-        libtcod.console_set_default_foreground(self.console, libtcod.white)
-        leftovermessage = ""
-        if len(msg) >= self.width:
-            leftovermessage = msg[self.width-1:]
-
-        if len(self.lines) >= self.height:
-            self.lines = self.lines[1:]
-        self.lines.append(msg)
-        if leftovermessage != "":
-            self.appendMessage(leftovermessage)
-        else:
-            self.repaintMessages()
-
-    def appendClientMessage(self, msg):
-        self.appendMessage("[CLIENT] " + msg)
-    def appendServerMessage(self, msg):
-        self.appendMessage("[SERVER] " + msg)
-
-    def display(self):
-        libtcod.console_blit(self.console, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, self.x, self.y)
-        
-
-class CombatObject:
-    def __init__(self, hp, defense, power, deathfunction = None):
-        self.max_hp = hp
-        self.hp = hp
-        self.defense = defense
-        self.power = power
-        self.deathfunction = deathfunction
-
-    def hit(self, target):
-        global combatlog
-        if 'combat' not in target.properties or target.properties['combat'] is None:
-            return
-        damagedealt = target.properties['combat'].takeDamage(self.power, self)
-
-    def takeDamage(self, damage, attacker):
-        if damage >= 0:
-            combatlog.appendMessage(attacker.owner.name.capitalize() + ' attacks ' + self.owner.name + ' for ' + str(damage) + " damage.")
-        else:
-            combatlog.appendMessage(attacker.owner.name.capitalize() + ' heals ' + self.owner.name + ' for ' + str(damage) + " hitpoints.")
-        self.hp -= damage
-        if self.hp <= 0:
-            function = self.deathfunction
-            if function is not None:
-                function(self.owner, attacker.owner)
-        return damage
-
-class BasicMonster:
-    def takeTurn(self, areamap, player):
-        if libtcod.map_is_in_fov(areamap.fovMap, self.owner.x, self.owner.y):
-            if self.owner.distanceTo(player.x, player.y) >= 2:
-                self.moveTowards(player.x, player.y, areamap)
-            else:
-                self.owner.properties['combat'].hit(player)
-
-    def moveTowards(self, target_x, target_y, areamap):
-        dx = target_x - self.owner.x
-        dy = target_y - self.owner.y
-        distance = self.owner.distanceTo(target_x, target_y)
-        dx = int(round(dx / distance))
-        dy = int(round(dy / distance))
-
-        self.owner.move(areamap, dx,dy)
-
-class Rect:
-    def __init__(self, x, y, w, h):
-        self.x1 = x
-        self.x2 = x+w
-        self.y1 = y
-        self.y2 = y+h
-
-
-class Room:
-    def __init__(self, tiles, rect):
-        self.rect = rect
-        for x in range(rect.x1+1, rect.x2):
-            for y in range(rect.y1+1, rect.y2):
-                tiles[x][y].blocked = False
-                tiles[x][y].block_sight = False
-        self.rect.x1 += 1
-        self.rect.x2 -= 1
-        self.rect.y1 += 1
-        self.rect.y2 -= 1
-
-class Tile:
-    def __init__(self, blocked, block_sight=None):
-        self.blocked = blocked
-        self.explored = False
-
-        if block_sight is None: block_sight=blocked
-        self.block_sight = block_sight
-
-class AreaMap:
-    def __init__(self, width, height):
-        self.width = width
-        self.height = height
-
-        self.tiles = [[ Tile(True)
-            for y in range(height) ]
-            for x in range(width) ]
-
-        self.rooms = []
-        self.makeRoom(Rect(20, 15, 10, 15))
-        self.makeRoom(Rect(50, 15, 10, 15))
-
-        self.makeHorizontalTunnel(25, 55, 23)
-
-        self.fovMap = libtcod.map_new(width, height)
-        for y in range(height):
-            for x in range(width):
-                libtcod.map_set_properties(self.fovMap, x, y, not self.tiles[x][y].block_sight, not self.tiles[x][y].blocked)
-
-        self.entities = []
-
-    def makeRoom(self, rect):
-        self.rooms.append(Room(self.tiles, rect))
-
-    def makeHorizontalTunnel(self, x1, x2, yc, width=5):
-        top = yc-width/2
-        for x in range(x1, x2+1):
-            for y in range(top, yc+width):
-                self.tiles[x][y].blocked = False
-                self.tiles[x][y].block_sight = False
-
-    def makeVerticalTunnel(self, y1, y2, xc, width=5):
-        left = xc-width/2
-        for x in range(left, xc+width):
-            for y in range(y1, y2+1):
-                self.tiles[x][y].blocked = False
-                self.tiles[x][y].block_sight = False
-
-    def recomputeLights(self, player):
-        libtcod.map_compute_fov(self.fovMap, player.x, player.y, TORCH_RADIUS, FOV_LIGHT_WALLS, FOV_ALGO)
-
-    def isBlocked(self, x, y):
-        if self.tiles[x][y].blocked:
-            return True
-
-        for entity in self.entities:
-            if entity.x == x and entity.y == y and entity.blocks:
-                return True
-
-        return False
-
-        
-class Entity:
-    def __init__(self, x, y, char, color, name, blocks=True, properties={}):
-        self.x = x
-        self.y = y
-        self.char = char
-        self.color = color
-        self.name = name
-        self.blocks = blocks
-        self.properties = properties
-        for p in self.properties:
-            self.properties[p].owner = self
-#        self.lightsource = False
-
-    def draw(self, fov):
-        if libtcod.map_is_in_fov(fov, self.x, self.y):
-            libtcod.console_set_default_foreground(con, self.color)
-            libtcod.console_put_char(con, self.x, self.y, self.char, libtcod.BKGND_NONE)
-
-    def clear(self):
-        libtcod.console_put_char(con, self.x, self.y, ' ', libtcod.BKGND_NONE)
-
-    def move(self, areamap, xdir, ydir):
-        if not areamap.isBlocked(self.x+xdir, self.y+ydir):
-            self.x += xdir
-            self.y += ydir
-#            if self.lightsource:
-#                areamap.recomputeLights(self)
-    def distanceTo(self, x, y):
-        dx = x - self.x
-        dy = y - self.y
-        return math.sqrt(dx ** 2 + dy ** 2)
-        
-
-def handle_keys(player, areamap, typingpanel):
-    key = libtcod.console_check_for_keypress(True)
-
-    if key.vk == libtcod.KEY_ENTER:
-        if key.lalt:
-            libtcod.console_set_fullscreen(not libtcod.console_is_fullscreen())
-        elif typingpanel.active:
-            msgpanel.appendMessage(player.name + "> " + typingpanel.message)
-            typingpanel.message = ""
-            typingpanel.active = False
-            typingpanel.refreshMessage()
-        else:
-            typingpanel.active = True
-            typingpanel.refreshMessage()
-    elif key.vk == libtcod.KEY_ESCAPE:
-        if typingpanel.active:
-            typingpanel.active = False
-        else:
-            return True
-    elif typingpanel.active:
-        typingpanel.handleKey(key)
-        return False
-
-    xdir = 0
-    ydir = 0
-    
-    if libtcod.console_is_key_pressed(libtcod.KEY_UP):
-        ydir = -1
-    elif libtcod.console_is_key_pressed(libtcod.KEY_DOWN):
-        ydir = 1
-    elif libtcod.console_is_key_pressed(libtcod.KEY_LEFT):
-        xdir = -1
-    elif libtcod.console_is_key_pressed(libtcod.KEY_RIGHT):
-        xdir = 1
-
-    if not (xdir == 0 and ydir == 0):
-        player.move(areamap, xdir, ydir)
-        areamap.recomputeLights(player)
-
-
-def render_all(mapdata, player, con):
-    for entity in mapdata.entities:
-        entity.draw(mapdata.fovMap)
-    for y in range(mapdata.height):
-        for x in range(mapdata.width):
-            key1 = 'dark'
-            key2 = 'ground'
-            if libtcod.map_is_in_fov(mapdata.fovMap, x, y):
-                key1 = 'visible' 
-                mapdata.tiles[x][y].explored = True
-
-            if mapdata.tiles[x][y].block_sight: 
-                key2 = 'wall'
-
-            if mapdata.tiles[x][y].explored:
-                libtcod.console_set_char_background(con, x, y, colors[key1][key2], libtcod.BKGND_SET)
-    player.draw(mapdata.fovMap)
-
-def createMonsters(areaMap):
-    for room in areaMap.rooms:
-        nummonsters = libtcod.random_get_int(0, 0, MAX_ROOM_MONSTERS)
-        for i in range(nummonsters):
-            x = libtcod.random_get_int(0, room.rect.x1, room.rect.x2)
-            y = libtcod.random_get_int(0, room.rect.y1, room.rect.y2)
-
-            if not areaMap.isBlocked(x,y):
-                combat_component = CombatObject(hp=10, defense=1, power=1, deathfunction=monster_death)
-                ai_component = BasicMonster()
-                areaMap.entities.append(Entity(x, y, 'o', libtcod.desaturated_green, 'orc', True, {'combat': combat_component, 'ai': ai_component}))
-
-
-def show_status(chatcon, player):
-    libtcod.console_set_default_foreground(chatcon, libtcod.white)
-    hptext = "Dead."
-    if player.properties['combat'] is not None:
-        hptext = 'HP: ' + str(player.properties['combat'].hp) + '/' + str(player.properties['combat'].max_hp)
-    libtcod.console_print_ex(chatcon, 1, 0, libtcod.BKGND_NONE, libtcod.LEFT,
-            hptext)
-
-def displayKillMessage(killed, killer):
-    combatlog.appendMessage(killer.capitalize() + " killed " + killed + "!")
-
-def player_death(player, killer):
-    displayKillMessage(player.name, killer.name)
-    print 'You died!'
-    player.char = '%'
-    player.color = libtcod.dark_red
-    player.properties['combat'] = None
-
-def monster_death(monster, killer):
-    displayKillMessage(monster.name, killer.name)
-    print monster.name.capitalize() + ' is dead!'
-    monster.char = '%'
-    monster.blocks = False
-    monster.properties['combat'] = None
-    monster.properties['ai'] = None
-    monster.name = 'remains of ' + monster.name
-    # TODO : monster send to back
+    def monster_death(self, monster, killer):
+        self.displayKillMessage(monster.name, killer.name)
+        print monster.name.capitalize() + ' is dead!'
+        monster.char = '%'
+        monster.blocks = False
+        monster.properties['combat'] = None
+        monster.properties['ai'] = None
+        monster.name = 'remains of ' + monster.name
+        # TODO : monster send to back
 
 class ServerConnection:
-    def __init__(self):
+    def __init__(self, game):
         self.tcpsocket = None
         self.incomingmessages = Queue.Queue()
         self.outgoingmessages = Queue.Queue()
         self.incomingbuffer = BytesIO()
         self.outgoingbuffer = BytesIO()
         self.ok = False
-        self.unpacker = msgpack.Unpacker
-        self.packer = msgpack.Packer
+        self.unpacker = msgpack.Unpacker()
+        self.packer = msgpack.Packer()
+        self.game = game
 
     def connect(self, ip, port):
         self.serverip = ip
@@ -397,54 +244,80 @@ class ServerConnection:
 
         for i in range(TCP_RETRYCOUNT):
             try:
-                msgpanel.appendClientMessage('Connecting to ' + ip + ":" + str(port) + "...")
+                print('Connecting to ' + ip + ":" + str(port) + "...")
                 self.tcpsocket.connect((ip, port))
-                msgpanel.appendClientMessage('Connected.')
+                print('Connected.')
                 self.ok = True
-                self.tcpsocket.settimeout(None)
                 break
             except socket.timeout:
-                msgpanel.appendClientMessage('Timed out.')
+                print('Timed out. Retrying..')
                 pass
             except socket.error as (errno, msg):
-                msgpanel.appendClientMessage('ERROR : ' + msg)
+                print('ERROR : ' + msg)
                 break
+        self.tcpsocket.settimeout(0)
+
+    def requestFullStateAndPlayerCharacter(self):
+        self.tcpsocket.setblocking(True)
+        msg = self.packer.pack(Message.ConnectMessage())
+
+        staticstate = False
+
+        while staticstate == False:
+            self.unpacker.feed(self.tcpsocket.recv(1024))
+            for o in self.unpacker:
+                staticstate = o['state']
+                break
+        self.tcpsocket.setblocking(False)
+        return staticstate
+
+    def disconnect(self):
+        self.putMessageOutQueue(Message.DisconnectMessage())
+        try:
+            self.sendMessages()
+        except:
+            pass
+
+    def putMessageOutQueue(self, msg):
+        try:
+            self.outgoingmessages.put(msg)
+        except Queue.Full:
+            msgpanel.appendClientMessage("INCOMING MESSAGE QUEUE FULL, MUCHOS PROBLEM!!!!!")
+
+    def putMessageInQueue(self, msg):
+        try:
+            self.incomingmessages.put(msg)
+        except Queue.Full:
+            msgpanel.appendClientMessage("INCOMING MESSAGE QUEUE FULL, MUCHOS PROBLEM!!!!!")
+    
     def parsemessages(self):
         for unpacked in self.unpacker:
-            try:
-                self.incomingmessages.put(unpacked)
-            except Queue.Full:
-                msgpanel.appendClientMessage("INCOMING MESSAGE QUEUE FULL, MUCHOS PROBLEM!!!!!")
+            self.putMessageInQueue(unpacked)
+
+    def sendMessages(self):
+        ## send outgoing messages
+        try:
+            msg = self.outgoingmessages.get(False)
+            self.tcpsocket.send(self.packer.pack(msg))
+        except Queue.Empty:
+            pass
+
+    def receiveMessages(self):
+        ## check for incoming messages
+        try:
+            msg = self.tcpsocket.recv(1024)
+            self.unpacker.feed(msg)
+            self.parsemessages()
+        except socket.error as (errorcode, msg):
+            if errorcode != errno.EWOULDBLOCK:
+                self.game.msgpanel.appendClientMessage("Connection error: " + msg)
 
     def run(self):
         self.stop = False
-        ip = "127.0.0.1"
-        port = 5005
-
-        self.connect(ip, port)
-        if not self.ok:
-            return
-
-        self.tcpsocket.setblocking(False)
         while not self.stop:
-            ## check for incoming messages
-            try:
-                self.unpacker.feed(conn.tcpsocket.recv()) # need to check the ret?
-                parsemessages()
-            except:
-                pass
-
-            ## send outgoing messages
-            try:
-                msg = self.outgoingmessages.get(False)
-                self.tcpsocket.send(self.packer.pack(msg))
-            except Queue.Empty:
-                pass
-
-class ChatMessage:
-    def __init__(self, sender, msg):
-        self.sender = msg
-        self.msg = msg
+            self.receiveMessages()
+            self.sendMessages()
+            time.sleep(0.01)
 
 class MessageConsumer:
     def __init__(self, incomingmessages, outgoingmessages, game):
@@ -455,70 +328,29 @@ class MessageConsumer:
     def handleMessages(self):
         while 1:
             try:
-                msg = self.messages.get(False)
+                msg = self.inmessages.get(False)
                 self.handleMessage(msg)
-            except Queue.empty:
+            except Queue.Empty:
                 break
 
     def handleMessage(self, msg):
-        if msg.msgtype == Message.CHAT:
-            msgdata.appendMessage(msg.sender + "> " + msg.msg)
-        elif msg.msgtype == Message.PONG:
+#        print 'Received message: ' + str(msg)
+        msgtype = msg['type']
+        if msgtype == Message.CHAT_MESSAGE:
+            self.game.msgpanel.appendMessage(msg['sender'] + "> " + msg['msg'])
+        elif msgtype == Message.SYSTEM_MESSAGE:
+            self.game.msgpanel.appendServerMessage(msg['msg'])
+        elif msgtype == Message.PONG:
             self.game.ping = msg.ping # TODO
+        elif msgtype == Message.FULL_STATE_MESSAGE:
+            self.game.syncEntitiesFromFullState(msg['state'])
         else:
-            print('Message of unknown type ' + msg.msgtype + ' received.')
+            print('Message of unknown type ' + str(msgtype) + ' received.')
 
+game = Game()
+game.connect('127.0.0.1', 5005)
 #libtcod.console_set_custom_font('arial.ttf', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
-libtcod.console_init_root(SCREEN_WIDTH, SCREEN_HEIGHT, 'python/libtcod tutorial', False)
-libtcod.sys_set_fps(LIMIT_FPS)
 
-npc = Entity(SCREEN_WIDTH/2-5, SCREEN_HEIGHT/2, '@', libtcod.yellow, 'npc')
-combat_component = CombatObject(hp=20, defense=2, power=5, deathfunction=player_death)
-player = Entity(25, 23, '@', libtcod.white, 'player', True, {'combat': combat_component})
-
-con = libtcod.console_new(SCREEN_WIDTH-20, SCREEN_HEIGHT-10)
-chatcon = libtcod.console_new(SCREEN_WIDTH, 10)
-mapdata = AreaMap(SCREEN_WIDTH, SCREEN_HEIGHT)
-mapdata.entities = [npc, player]
-createMonsters(mapdata)
-mapdata.recomputeLights(player)
-
-msgpanel = MessagePanel(0, SCREEN_HEIGHT-15, SCREEN_WIDTH/2, 10)
-combatlog = MessagePanel(SCREEN_WIDTH/2+1, SCREEN_HEIGHT-25, SCREEN_WIDTH/2, 20)
-statuspanel = StatusPanel(player)
-typingpanel = TypingPanel()
-
-conn = ServerConnection()
-
-thread = threading.Thread(target = conn.run)
-thread.start()
-
-
-while not libtcod.console_is_window_closed():
-    libtcod.console_set_default_foreground(con, libtcod.white)
-
-    render_all(mapdata, player, con)
-    show_status(chatcon, player)
-
-    libtcod.console_blit(con, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0)
-#    libtcod.console_blit(chatcon, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, SCREEN_HEIGHT-10)
-    combatlog.display()
-    msgpanel.display()
-    statuspanel.display()
-    typingpanel.display()
-    libtcod.console_flush()
-
-    for entity in mapdata.entities:
-        entity.clear()
-
-    exit = handle_keys(player, mapdata, typingpanel)
-    if exit:
-        break
-
-    for o in mapdata.entities:
-        if o != player and 'ai' in o.properties:
-            o.properties['ai'].takeTurn(mapdata, player) # TODO : timeout for monster
-
-conn.stop = True
-thread.join
+#player = Entity(15, 13, '@', libtcod.white, 'player', True)
+#player.AddProperty('combat', {'hp': 20, 'defense':2, 'power':5, 'deathfunction':'player_death'}, globals())

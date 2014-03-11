@@ -3,7 +3,8 @@ import math
 import socket
 import time
 import threading
-import queue
+import Queue
+import msgpack
 from io import BytesIO
 
 colors = { 'visible': {
@@ -95,7 +96,7 @@ class MessagePanel:
             libtcod.console_print_ex(self.console, 1, j, libtcod.BKGND_NONE, libtcod.LEFT, ('{0: <' + str(self.width) + '}').format(i))
             j += 1
 
-    def appendMessage(self, msg): # TODO : compact repeating messages with (x16) etc, necessary?
+    def appendMessage(self, msg): # TODO : compact repeating messages with (x16) etc, necessary?, concurrency
         libtcod.console_set_default_foreground(self.console, libtcod.white)
         leftovermessage = ""
         if len(msg) >= self.width:
@@ -377,8 +378,8 @@ def monster_death(monster, killer):
 class ServerConnection:
     def __init__(self):
         self.tcpsocket = None
-        self.incomingmessages = queue.Queue()
-        self.outgoingmessages = queue.Queue()
+        self.incomingmessages = Queue.Queue()
+        self.outgoingmessages = Queue.Queue()
         self.incomingbuffer = BytesIO()
         self.outgoingbuffer = BytesIO()
         self.ok = False
@@ -408,40 +409,64 @@ class ServerConnection:
             except socket.error as (errno, msg):
                 msgpanel.appendClientMessage('ERROR : ' + msg)
                 break
+    def parsemessages(self):
+        for unpacked in self.unpacker:
+            try:
+                self.incomingmessages.put(unpacked)
+            except Queue.Full:
+                msgpanel.appendClientMessage("INCOMING MESSAGE QUEUE FULL, MUCHOS PROBLEM!!!!!")
 
-def parsemessages(conn):
-    for unpacked in unpacker:
-        try:
-            conn.incomingmessages.put(unpacked)
-        except queue.Full:
-            msgpanel.appendClientMessage("INCOMING MESSAGE QUEUE FULL, MUCHOS PROBLEM!!!!!")
+    def run(self):
+        self.stop = False
+        ip = "127.0.0.1"
+        port = 5005
 
-def connectionfunc():
-    ip = "127.0.0.1"
-    port = 5005
+        self.connect(ip, port)
+        if not self.ok:
+            return
 
-    conn = ServerConnection()
-    conn.connect(ip, port)
-    if not conn.ok:
-        return
+        self.tcpsocket.setblocking(False)
+        while not self.stop:
+            ## check for incoming messages
+            try:
+                self.unpacker.feed(conn.tcpsocket.recv()) # need to check the ret?
+                parsemessages()
+            except:
+                pass
 
-    conn.tcpsocket.setblocking(False)
-    while 1:
-        ## check for incoming messages
-        try:
-            conn.unpacker.feed(conn.tcpsocket.recv()) # need to check the ret?
-            parsemessages(self.incomingbuffer)
-        except:
-            pass
+            ## send outgoing messages
+            try:
+                msg = self.outgoingmessages.get(False)
+                self.tcpsocket.send(self.packer.pack(msg))
+            except Queue.Empty:
+                pass
 
-        ## send outgoing messages
-        try:
-            msg = conn.outgoingmessages.get(False)
-            conn.tcpsocket.send(conn.packer.pack(msg))
-        except queue.Empty:
-            pass
+class ChatMessage:
+    def __init__(self, sender, msg):
+        self.sender = msg
+        self.msg = msg
 
+class MessageConsumer:
+    def __init__(self, incomingmessages, outgoingmessages, game):
+        self.inmessages = incomingmessages
+        self.outmessages = outgoingmessages
+        self.game = game
 
+    def handleMessages(self):
+        while 1:
+            try:
+                msg = self.messages.get(False)
+                self.handleMessage(msg)
+            except Queue.empty:
+                break
+
+    def handleMessage(self, msg):
+        if msg.msgtype == Message.CHAT:
+            msgdata.appendMessage(msg.sender + "> " + msg.msg)
+        elif msg.msgtype == Message.PONG:
+            self.game.ping = msg.ping # TODO
+        else:
+            print('Message of unknown type ' + msg.msgtype + ' received.')
 
 #libtcod.console_set_custom_font('arial.ttf', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
@@ -464,8 +489,9 @@ combatlog = MessagePanel(SCREEN_WIDTH/2+1, SCREEN_HEIGHT-25, SCREEN_WIDTH/2, 20)
 statuspanel = StatusPanel(player)
 typingpanel = TypingPanel()
 
+conn = ServerConnection()
 
-thread = threading.Thread(target = connectionfunc)
+thread = threading.Thread(target = conn.run)
 thread.start()
 
 
@@ -493,3 +519,6 @@ while not libtcod.console_is_window_closed():
     for o in mapdata.entities:
         if o != player and 'ai' in o.properties:
             o.properties['ai'].takeTurn(mapdata, player) # TODO : timeout for monster
+
+conn.stop = True
+thread.join

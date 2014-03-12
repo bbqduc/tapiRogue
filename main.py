@@ -12,6 +12,7 @@ import errno
 import tapirogueproperties as tapiRogueProperties
 import areamap
 from entity import Entity, CreateProperty
+import util
 
 
 ##### ugly globals
@@ -91,7 +92,7 @@ class Game:
         self.createPanels(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.messageconsumer = MessageConsumer(self.serverconnection.incomingmessages, self.serverconnection.outgoingmessages, self)
         self.entities = {}
-        self.lastmoveclock = time.clock()
+        self.lastmoveclock = util.clock()
         self.effects = []
     
     def createWindow(self):
@@ -146,7 +147,7 @@ class Game:
             xdir = 1
 
         if not (xdir == 0 and ydir == 0):
-            t = time.clock()
+            t = time.time()
             if t - self.lastmoveclock > 0.01:
                 self.serverconnection.putMessageOutQueue(Message.MovementMessage(xdir, ydir))
                 self.lastmoveclock = t
@@ -196,7 +197,12 @@ class Game:
         for i in diff:
            if i in self.entities:
               if 'event' in diff[i]: # todo : fix purkka so you can have both event and x,y diff ?
-                 self.effects.append(SwordSwingEffect(self.entities[i]))# todo : make possible other events than melee swing
+                 if diff[i]['event'] == 'melee':
+                     self.effects.append(SwordSwingEffect(self.entities[i]))
+                 elif diff[i]['event'] == 'delete':
+                     del self.entities[i]
+                 else:
+                     print 'Unknown event: ' + str(diff[i]['event'])
               else:
                  self.entities[i].x = diff[i]['x']
                  self.entities[i].y = diff[i]['y']
@@ -211,13 +217,13 @@ class Game:
         self.areamap.recomputeLights(self.player)
 
     def run(self):
-        self.lastsimtime = time.clock()
+        self.lastsimtime = util.clock()
         while not libtcod.console_is_window_closed():
             libtcod.console_set_default_foreground(self.mainconsole, libtcod.white)
 
             self.messageconsumer.handleMessages()
 
-            t = time.clock()
+            t = util.clock()
             dt = t - self.lastsimtime
             self.lastsimtime = t
             neweffects = []

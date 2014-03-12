@@ -229,7 +229,7 @@ class Server:
 
     def run(self):
         self.changed = False
-        self.lastsimtime = time.clock()
+        self.lastsimtime = util.clock()
         while not self.packethandler.stop:
             # handle server events
             self.diffpacket = {}
@@ -241,7 +241,7 @@ class Server:
                 except Queue.Empty:
                     break
 
-            t = time.clock()
+            t = util.clock()
             dt = t - self.lastsimtime
             self.lastsimtime = t
             # handle individual player events
@@ -254,7 +254,10 @@ class Server:
 
             self.diffpacket = Message.DiffStateMessage(self.diffpacket)
             for p in self.players:
-                self.players[p].sendMessages()
+                try:
+                    self.players[p].sendMessages()
+                except socket.error:
+                    self.disconnectClient(p)
 
 #            time.sleep(0.03)
 

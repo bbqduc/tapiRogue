@@ -21,14 +21,9 @@ def ChatMessage(sender, msg):
                 'sender': sender
                 }
 
-def NewClientMessage(socket, name):
-    return { 'type': NEW_CLIENT_CONNECTION,
-                'socket': socket,
-                'name': name
-                }
-
-def DisconnectMessage():
-    return { 'type': CLIENT_DISCONNECT
+def DisconnectMessage(entityid):
+    return { 'type': CLIENT_DISCONNECT,
+            'id': entityid
                 }
 
 def ConnectMessage():

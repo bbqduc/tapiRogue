@@ -9,6 +9,7 @@ import errno
 import areamap
 import libtcodpy as libtcod
 from entity import Entity, CreateProperty
+import util
 
 class PlayerInput:
    INPUT_EMPTY = 0

@@ -40,6 +40,47 @@ LIMIT_FPS = 20
 
 
 #######################################
+class Effect:
+    def __init__(self, lifetime):
+       self.lifetime = lifetime
+       self.timeactive = 0
+    
+    def tick(self, dt):
+       self.timeactive += dt
+    
+    def destroy(self, console):
+       pass
+
+class SwordSwingEffect(Effect):
+    def __init__(self, center):
+       Effect.__init__(self, 0.5)
+       self.center = center
+       self.lastx = center.x
+       self.lasty = center.y
+       self.characters = [ '|', '/', '-', '\\', '|', '/', '-', '\\' ]
+       self.diffs = [ (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1) ]
+    
+    def display(self, console):
+       self.clear(console)
+       simindex = int(8*self.timeactive / self.lifetime)
+       if simindex > 7:
+          return
+       x = self.center.x
+       y = self.center.y
+       libtcod.console_set_default_foreground(console, libtcod.red)
+       (diffx, diffy) = self.diffs[simindex]
+       c = self.characters[simindex]
+       x += diffx
+       y += diffy
+       libtcod.console_put_char(console, x, y, c, libtcod.BKGND_NONE)
+       self.lastx = x
+       self.lasty = y
+    
+    def clear(self, console):
+       libtcod.console_put_char(console, self.lastx, self.lasty, ' ', libtcod.BKGND_NONE)
+    
+    def destroy(self, console):
+       self.clear(console)
 
 class Game:
     def __init__(self):
@@ -51,15 +92,19 @@ class Game:
         self.messageconsumer = MessageConsumer(self.serverconnection.incomingmessages, self.serverconnection.outgoingmessages, self)
         self.entities = {}
         self.lastmoveclock = time.clock()
+        self.effects = []
     
     def createWindow(self):
-        libtcod.console_init_root(SCREEN_WIDTH, SCREEN_HEIGHT, 'tapiRogue', False)
+        libtcod.console_set_custom_font('consolas10x10_gs_tc.png', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
+        libtcod.console_init_root(SCREEN_WIDTH, SCREEN_HEIGHT, 'tapiRogue', False, libtcod.RENDERER_GLSL)
         libtcod.sys_set_fps(LIMIT_FPS)
 
     def createPanels(self, width, height):
-        self.mainconsole = libtcod.console_new(SCREEN_WIDTH-20, SCREEN_HEIGHT-10)
+        self.mainconsole = libtcod.console_new(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.mainconsolewidth = SCREEN_WIDTH - 11
+        self.mainconsoleheight = SCREEN_HEIGHT - 15
         self.msgpanel = MessagePanel(0, height-15, width/2, 10)
-        self.combatlog = MessagePanel(width/2+1, height-25, width/2, 20)
+        self.combatlog = MessagePanel(width/2+1, height-15, width/2, 20)
         self.typingpanel = TypingPanel(width, height-2)
 
     def handle_keys(self):
@@ -84,6 +129,9 @@ class Game:
         elif self.typingpanel.active:
             self.typingpanel.handleKey(key)
             return False
+        elif key.vk == libtcod.KEY_SPACE:
+           self.effects.append(SwordSwingEffect(self.player))
+           return False
 
         xdir = 0
         ydir = 0
@@ -99,11 +147,9 @@ class Game:
 
         if not (xdir == 0 and ydir == 0):
             t = time.clock()
-            if t - self.lastmoveclock > 0.2:
+            if t - self.lastmoveclock > 0.01:
                 self.serverconnection.putMessageOutQueue(Message.MovementMessage(xdir, ydir))
                 self.lastmoveclock = t
-#            self.player.move(self.areamap, xdir, ydir)
-#            self.areamap.recomputeLights(self.player)
 
     def connect(self, ip, port):
         self.serverconnection.connect(ip, port)
@@ -145,15 +191,36 @@ class Game:
         self.player = self.entities[state['playerid']]
         self.areamap.recomputeLights(self.player)
         self.waitForFullState = False
+    
+    def syncEntitiesFromDiffState(self, diff):
+        for i in diff:
+           self.entities[i].x = diff[i]['x']
+           self.entities[i].y = diff[i]['y']
+        self.areamap.recomputeLights(self.player)
 
     def run(self):
+        self.lastsimtime = time.clock()
         while not libtcod.console_is_window_closed():
             libtcod.console_set_default_foreground(self.mainconsole, libtcod.white)
 
             self.messageconsumer.handleMessages()
 
+            t = time.clock()
+            dt = t - self.lastsimtime
+            self.lastsimtime = t
+            neweffects = []
+            for e in self.effects:
+               e.clear(self.mainconsole)
+               e.tick(dt)
+               e.display(self.mainconsole)
+               if e.timeactive < e.lifetime:
+                  neweffects.append(e)
+               else:
+                  e.destroy(self.mainconsole)
+            self.effects = neweffects
+
             self.render_all()
-            libtcod.console_blit(self.mainconsole, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0)
+            libtcod.console_blit(self.mainconsole, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, self.mainconsolewidth/2-self.player.x, self.mainconsoleheight/2-self.player.y)
             self.combatlog.display()
             self.msgpanel.display()
             self.statuspanel.display()
@@ -244,6 +311,7 @@ class ServerConnection:
             self.tcpsocket.close()
         self.ok = False
         self.tcpsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcpsocket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.tcpsocket.settimeout(5)
 
         for i in range(TCP_RETRYCOUNT):
@@ -348,12 +416,14 @@ class MessageConsumer:
             self.game.ping = msg.ping # TODO
         elif msgtype == Message.FULL_STATE_MESSAGE:
             self.game.syncEntitiesFromFullState(msg['state'])
+        elif msgtype == Message.DIFF_STATE_MESSAGE:
+            self.game.syncEntitiesFromDiffState(msg['state'])
         else:
             print('Message of unknown type ' + str(msgtype) + ' received.')
 
 game = Game()
-#game.connect('127.0.0.1', 5005)
-game.connect('bduc.org', 5006)
+game.connect('127.0.0.1', 5005)
+#game.connect('bduc.org', 5005)
 #libtcod.console_set_custom_font('arial.ttf', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
 

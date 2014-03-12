@@ -10,6 +10,21 @@ import areamap
 import libtcodpy as libtcod
 from entity import Entity, CreateProperty
 
+class PlayerInput:
+   INPUT_EMPTY = 0
+   INPUT_MOVE = 1
+   INPUT_MELEE = 2
+   @staticmethod
+   def Move(xdir, ydir):
+      return {'type': PlayerInput.INPUT_MOVE, 'xdir': xdir, 'ydir': ydir}
+   @staticmethod
+   def Melee(direction):
+      return {'type': PlayerInput.INPUT_MELEE, 'dir': direction}
+   @staticmethod
+   def Empty():
+      return {'type': PlayerInput.INPUT_EMPTY }
+
+
 mapdata =  {
             'rooms': [ {'x1': 10, 'y1':10, 'width':10, 'height':20},
                 {'x1': 50, 'y1':10, 'width':10, 'height':20}
@@ -18,18 +33,36 @@ mapdata =  {
             'htunnels': [{'x1': 16, 'x2': 52, 'y': 15, 'width': 3}]
             }
 
+ACTIONCOOLDOWN = 0.05
+
 class Player:
     def __init__(self, playerid, entityid, name, socket, server):
+        self.server = server
         self.playerid = playerid
         self.entityid = entityid 
+        self.entity = self.server.entities[entityid]
         self.name = name
         self.socket = socket
         self.outmessages = Queue.Queue()
         self.inmessages = Queue.Queue()
         self.packer = msgpack.Packer()
         self.unpacker = msgpack.Unpacker()
-        self.server = server
         self.lastTickSent = -1
+        self.nextInput = PlayerInput.Empty()
+        self.actionCooldown = 0
+    
+    def tick(self, dt):
+       if self.actionCooldown > 0:
+          self.actionCooldown -= dt
+       if self.nextInput['type'] != PlayerInput.INPUT_EMPTY:
+          if self.actionCooldown <= 0:
+             if self.nextInput['type'] == PlayerInput.INPUT_MOVE:
+                self.entity.move(self.server.areamap, self.nextInput['xdir'], self.nextInput['ydir']) # todo : just store the entity in self, lol
+                self.server.diffpacket[self.entityid] = { 'x': self.entity.x, 'y': self.entity.y  } # todo : dont need to send unchanged 
+             self.actionCooldown = ACTIONCOOLDOWN
+             self.server.changed = True
+          self.nextInput = PlayerInput.Empty()
+
 
     def sendMessages(self):
         while 1:
@@ -43,9 +76,11 @@ class Player:
                 if errorcode != errno.EWOULDBLOCK:
                     raise
         if self.lastTickSent != self.server.tick:
+            msg = self.server.diffpacket
+            if self.lastTickSent == -1:
+               msg = self.server.fullstatepacket
+               msg['state']['playerid'] = self.entityid
             self.lastTickSent = self.server.tick
-            msg = self.server.fullstatepacket
-            msg['state']['playerid'] = self.entityid
             packed = self.packer.pack(msg)
             self.socket.send(packed)
 
@@ -63,12 +98,12 @@ class Player:
 
 class PacketHandler:
     def __init__(self, players, server):
-#        self.ip = '127.0.0.1'
-        self.ip = 'bduc.org'
+        self.ip = '127.0.0.1'
+#        self.ip = 'bduc.org'
         self.port = 5005
         self.players = players
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.socket.bind((self.ip, self.port))
         self.socket.listen(1)
         self.socket.setblocking(False)
@@ -101,8 +136,8 @@ class PacketHandler:
             # check for new players
             try:
                 (conn, address) = self.socket.accept()
-		conn.setblocking(False)
-		conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                conn.setblocking(False)
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self.enQueueMessage(Message.NewClientMessage(conn, "Jorma"), None)
             except socket.error:
                 pass
@@ -111,6 +146,7 @@ class PacketHandler:
 
 class Server:
     def __init__(self):
+        self.diffpacket = {}
         self.players = {}
         self.nextid = 0
         self.nextentityid = 0
@@ -128,11 +164,12 @@ class Server:
     def makeStaticStatePacket(self):
         self.staticstatepacket = Message.FullStaticStateMessage(self.areamap.serialize())
 
-    def makeStatePacket(self):
+    def makeStatePacket(self): # todo : dont need to make full state packet if no one has requested it
         state = { 'entities': {} }
         for e in self.entities:
             state['entities'][e] = self.entities[e].serialize()
         self.fullstatepacket = Message.FullStateMessage(state)
+        self.diffpacket = Message.DiffStateMessage(self.diffpacket)
         self.tick += 1
 
     def newConnection(self, socket, name):
@@ -181,17 +218,14 @@ class Server:
         elif msg['type'] == Message.CHAT_MESSAGE:
             self.broadCastMessage(msg)
         elif msg['type'] == Message.MOVEMENT_MESSAGE:
-            self.movePlayer(playerid, msg['xdir'], msg['ydir'])
+            self.players[playerid].nextInput = PlayerInput.Move(msg['xdir'], msg['ydir'])
+#            self.movePlayer(playerid, msg['xdir'], msg['ydir'])
         else:
             print 'Unhandled message type : ' + str(msg['type'])
 
-    def movePlayer(self, playerid, xdir, ydir):
-        self.entities[self.players[playerid].entityid].move(self.areamap, xdir, ydir)
-	self.changed = True
-
-
     def run(self):
-	self.changed = False
+        self.changed = False
+        self.lastsimtime = time.clock()
         while not self.packethandler.stop:
             # handle server events
             while 1:
@@ -202,13 +236,21 @@ class Server:
                 except Queue.Empty:
                     break
 
+            t = time.clock()
+            dt = t - self.lastsimtime
+            self.lastsimtime = t
             # handle individual player events
+            self.diffpacket = {}
+            for p in self.players:
+                self.players[p].tick(dt)
+
+            if self.changed:
+               self.makeStatePacket()
+               self.changed = False
+
             for p in self.players:
                 self.players[p].sendMessages()
 
-	    if self.changed:
-		self.makeStatePacket()
-		self.changed = False
             time.sleep(0.03)
 
     def stop(self, signum, frame):

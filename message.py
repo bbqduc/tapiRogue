@@ -7,6 +7,7 @@ FULL_STATE_MESSAGE = 6
 FULL_STATIC_STATE_MESSAGE = 7
 CLIENT_CONNECT = 8
 MOVEMENT_MESSAGE = 9
+DIFF_STATE_MESSAGE = 10
 
 def SystemMessage(msg):
     return { 'type': SYSTEM_MESSAGE,
@@ -39,6 +40,10 @@ def FullStateMessage(state):
 
 def FullStaticStateMessage(state):
     return { 'type': FULL_STATIC_STATE_MESSAGE,
+            'state': state }
+
+def DiffStateMessage(state):
+    return { 'type': DIFF_STATE_MESSAGE,
             'state': state }
 
 def MovementMessage(xdir, ydir):

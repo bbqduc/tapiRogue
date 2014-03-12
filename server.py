@@ -104,7 +104,7 @@ class PacketHandler:
     def __init__(self, players, server):
 #        self.ip = '127.0.0.1'
         self.ip = 'bduc.org'
-        self.port = 5005
+        self.port = 5006
         self.players = players
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -142,7 +142,7 @@ class PacketHandler:
                 (conn, address) = self.socket.accept()
                 conn.setblocking(False)
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                self.enQueueMessage(Message.NewClientMessage(conn, "Jorma"), None)
+                self.enQueueMessage({'type': Message.NEW_CLIENT_CONNECTION, 'name': 'Jorma', 'socket': conn}, None)
             except socket.error:
                 pass
 

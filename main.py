@@ -95,7 +95,7 @@ class Game:
         self.effects = []
     
     def createWindow(self):
-        libtcod.console_set_custom_font('consolas10x10_gs_tc.png', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
+#        libtcod.console_set_custom_font('consolas10x10_gs_tc.png', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
         libtcod.console_init_root(SCREEN_WIDTH, SCREEN_HEIGHT, 'tapiRogue', False, libtcod.RENDERER_GLSL)
         libtcod.sys_set_fps(LIMIT_FPS)
 
@@ -434,8 +434,8 @@ class MessageConsumer:
             print('Message of unknown type ' + str(msgtype) + ' received.')
 
 game = Game()
-game.connect('127.0.0.1', 5005)
-#game.connect('bduc.org', 5005)
+#game.connect('127.0.0.1', 5005)
+game.connect('bduc.org', 5005)
 #libtcod.console_set_custom_font('arial.ttf', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
 

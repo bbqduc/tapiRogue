@@ -50,6 +50,7 @@ class Game:
         self.createPanels(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.messageconsumer = MessageConsumer(self.serverconnection.incomingmessages, self.serverconnection.outgoingmessages, self)
         self.entities = {}
+        self.lastmoveclock = time.clock()
     
     def createWindow(self):
         libtcod.console_init_root(SCREEN_WIDTH, SCREEN_HEIGHT, 'tapiRogue', False)
@@ -97,7 +98,10 @@ class Game:
             xdir = 1
 
         if not (xdir == 0 and ydir == 0):
-            self.serverconnection.putMessageOutQueue(Message.MovementMessage(xdir, ydir))
+            t = time.clock()
+            if t - self.lastmoveclock > 0.2:
+                self.serverconnection.putMessageOutQueue(Message.MovementMessage(xdir, ydir))
+                self.lastmoveclock = t
 #            self.player.move(self.areamap, xdir, ydir)
 #            self.areamap.recomputeLights(self.player)
 
@@ -348,7 +352,8 @@ class MessageConsumer:
             print('Message of unknown type ' + str(msgtype) + ' received.')
 
 game = Game()
-game.connect('127.0.0.1', 5005)
+#game.connect('127.0.0.1', 5005)
+game.connect('bduc.org', 5006)
 #libtcod.console_set_custom_font('arial.ttf', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
 

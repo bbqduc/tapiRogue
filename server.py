@@ -51,7 +51,7 @@ class Player:
 
     def checkSocket(self): # todo : naming
         try:
-            self.unpacker.feed(self.socket.recv(32)) # need to check the ret?
+            self.unpacker.feed(self.socket.recv(8)) # need to check the ret?
             self.parsemessages()
         except socket.error as (errorcode, msg):
             if errorcode != errno.EWOULDBLOCK:
@@ -65,9 +65,10 @@ class PacketHandler:
     def __init__(self, players, server):
 #        self.ip = '127.0.0.1'
         self.ip = 'bduc.org'
-        self.port = 5006
+        self.port = 5005
         self.players = players
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.socket.bind((self.ip, self.port))
         self.socket.listen(1)
         self.socket.setblocking(False)
@@ -101,6 +102,7 @@ class PacketHandler:
             try:
                 (conn, address) = self.socket.accept()
 		conn.setblocking(False)
+		conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self.enQueueMessage(Message.NewClientMessage(conn, "Jorma"), None)
             except socket.error:
                 pass

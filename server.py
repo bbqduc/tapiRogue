@@ -33,7 +33,7 @@ mapdata =  {
             'htunnels': [{'x1': 16, 'x2': 52, 'y': 15, 'width': 3}]
             }
 
-ACTIONCOOLDOWN = 0.05
+ACTIONCOOLDOWN = 0.01
 
 class Player:
     def __init__(self, playerid, entityid, name, socket, server):
@@ -101,8 +101,8 @@ class Player:
 
 class PacketHandler:
     def __init__(self, players, server):
-        self.ip = '127.0.0.1'
-#        self.ip = 'bduc.org'
+#        self.ip = '127.0.0.1'
+        self.ip = 'bduc.org'
         self.port = 5005
         self.players = players
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -256,7 +256,7 @@ class Server:
             for p in self.players:
                 self.players[p].sendMessages()
 
-            time.sleep(0.03)
+#            time.sleep(0.03)
 
     def stop(self, signum, frame):
         self.packethandler.stop = True

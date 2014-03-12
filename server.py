@@ -61,7 +61,7 @@ class Player:
                 self.entity.move(self.server.areamap, self.nextInput['xdir'], self.nextInput['ydir']) # todo : just store the entity in self, lol
                 self.server.diffpacket[self.entityid] = { 'x': self.entity.x, 'y': self.entity.y  } # todo : dont need to send unchanged 
              elif self.nextInput['type'] == PlayerInput.INPUT_MELEE:
-                self.server.diffpacket[self.entityid] = { 'event': 0 } # todo : enum or something
+                self.server.diffpacket[self.entityid] = { 'event': 'melee' } # todo : enum or something
 
              self.actionCooldown = ACTIONCOOLDOWN
              self.server.changed = True
@@ -82,6 +82,7 @@ class Player:
         if self.lastTickSent != self.server.tick:
             msg = self.server.diffpacket
             if self.lastTickSent == -1:
+               print 'Sending full state!'
                msg = self.server.fullstatepacket
                msg['state']['playerid'] = self.entityid
             self.lastTickSent = self.server.tick
@@ -102,9 +103,9 @@ class Player:
 
 class PacketHandler:
     def __init__(self, players, server):
-#        self.ip = '127.0.0.1'
+        self.ip = '127.0.0.1'
         self.ip = 'bduc.org'
-        self.port = 5006
+        self.port = 5005
         self.players = players
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -205,9 +206,13 @@ class Server:
 
     def disconnectClient(self, playerid):
         try:
-            print (self.players[playerid].name + ' disconnected.')
-            self.broadCastMessage(Message.SystemMessage(self.players[playerid].name + " disconnected."))
+            p = self.players[playerid]
             del self.players[playerid]
+            del self.entities[p.entityid]
+            p.socket.shutdown(socket.SHUT_RDWR)
+            p.socket.close()
+            print (p.name + ' disconnected.')
+            self.broadCastMessage({'type': Message.CLIENT_DISCONNECT, 'id': p.entityid})
         except KeyError:
             pass # todo: how is it possible ???
 

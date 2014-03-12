@@ -362,9 +362,11 @@ class ServerConnection:
         return staticstate
 
     def disconnect(self):
-        self.putMessageOutQueue(Message.DisconnectMessage())
+        self.putMessageOutQueue({'type': Message.CLIENT_DISCONNECT})
         try:
             self.sendMessages()
+            self.tcpsocket.shutdown(socket.SHUT_RDWR)
+            self.tcpsocket.close()
         except:
             pass
 
@@ -436,11 +438,14 @@ class MessageConsumer:
             self.game.syncEntitiesFromFullState(msg['state'])
         elif msgtype == Message.DIFF_STATE_MESSAGE:
             self.game.syncEntitiesFromDiffState(msg['state'])
+        elif msgtype == Message.CLIENT_DISCONNECT:
+            self.game.msgpanel.appendServerMessage(self.game.entities[msg['id']].name + ' disconnected.')
+            del self.game.entities[msg['id']]
         else:
             print('Message of unknown type ' + str(msgtype) + ' received.')
 
 game = Game()
-#game.connect('127.0.0.1', 5005)
+#game.connect('127.0.0.1', 5006)
 game.connect('bduc.org', 5005)
 #libtcod.console_set_custom_font('arial.ttf', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 

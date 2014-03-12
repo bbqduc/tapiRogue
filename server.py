@@ -51,7 +51,7 @@ class Player:
 
     def checkSocket(self): # todo : naming
         try:
-            self.unpacker.feed(self.socket.recv(1024)) # need to check the ret?
+            self.unpacker.feed(self.socket.recv(32)) # need to check the ret?
             self.parsemessages()
         except socket.error as (errorcode, msg):
             if errorcode != errno.EWOULDBLOCK:
@@ -63,8 +63,9 @@ class Player:
 
 class PacketHandler:
     def __init__(self, players, server):
-        self.ip = '127.0.0.1'
-        self.port = 5005
+#        self.ip = '127.0.0.1'
+        self.ip = 'bduc.org'
+        self.port = 5006
         self.players = players
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.bind((self.ip, self.port))
@@ -99,6 +100,7 @@ class PacketHandler:
             # check for new players
             try:
                 (conn, address) = self.socket.accept()
+		conn.setblocking(False)
                 self.enQueueMessage(Message.NewClientMessage(conn, "Jorma"), None)
             except socket.error:
                 pass
@@ -183,10 +185,11 @@ class Server:
 
     def movePlayer(self, playerid, xdir, ydir):
         self.entities[self.players[playerid].entityid].move(self.areamap, xdir, ydir)
-        self.makeStatePacket()
+	self.changed = True
 
 
     def run(self):
+	self.changed = False
         while not self.packethandler.stop:
             # handle server events
             while 1:
@@ -201,7 +204,10 @@ class Server:
             for p in self.players:
                 self.players[p].sendMessages()
 
-            time.sleep(0.01)
+	    if self.changed:
+		self.makeStatePacket()
+		self.changed = False
+            time.sleep(0.03)
 
     def stop(self, signum, frame):
         self.packethandler.stop = True
@@ -211,16 +217,3 @@ server = Server ()
 
 signal.signal(signal.SIGINT, server.stop)
 server.start()
-
-def createMonsters(areaMap):
-    return
-    for room in areaMap.rooms:
-        nummonsters = libtcod.random_get_int(0, 0, MAX_ROOM_MONSTERS)
-        for i in range(nummonsters):
-            x = libtcod.random_get_int(0, room.rect.x1, room.rect.x2)
-            y = libtcod.random_get_int(0, room.rect.y1, room.rect.y2)
-
-            if not areaMap.isBlocked(x,y):
-                combat_component = CombatObject(hp=10, defense=1, power=1, deathfunction=monster_death)
-                ai_component = BasicMonster()
-                areaMap.entities.append(Entity(x, y, 'o', libtcod.desaturated_green, 'orc', True, {'combat': combat_component, 'ai': ai_component}))

@@ -8,6 +8,7 @@ FULL_STATIC_STATE_MESSAGE = 7
 CLIENT_CONNECT = 8
 MOVEMENT_MESSAGE = 9
 DIFF_STATE_MESSAGE = 10
+ACTION_MESSAGE = 11
 
 def SystemMessage(msg):
     return { 'type': SYSTEM_MESSAGE,
@@ -50,3 +51,8 @@ def MovementMessage(xdir, ydir):
     return { 'type': MOVEMENT_MESSAGE,
             'xdir': xdir,
             'ydir': ydir}
+
+def ActionMessage(action):
+    return { 'type': ACTION_MESSAGE,
+            'action': action,
+            }

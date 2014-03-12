@@ -59,6 +59,9 @@ class Player:
              if self.nextInput['type'] == PlayerInput.INPUT_MOVE:
                 self.entity.move(self.server.areamap, self.nextInput['xdir'], self.nextInput['ydir']) # todo : just store the entity in self, lol
                 self.server.diffpacket[self.entityid] = { 'x': self.entity.x, 'y': self.entity.y  } # todo : dont need to send unchanged 
+             elif self.nextInput['type'] == PlayerInput.INPUT_MELEE:
+                self.server.diffpacket[self.entityid] = { 'event': 0 } # todo : enum or something
+
              self.actionCooldown = ACTIONCOOLDOWN
              self.server.changed = True
           self.nextInput = PlayerInput.Empty()
@@ -169,7 +172,6 @@ class Server:
         for e in self.entities:
             state['entities'][e] = self.entities[e].serialize()
         self.fullstatepacket = Message.FullStateMessage(state)
-        self.diffpacket = Message.DiffStateMessage(self.diffpacket)
         self.tick += 1
 
     def newConnection(self, socket, name):
@@ -182,6 +184,7 @@ class Server:
         self.enQueueMessage(player, self.staticstatepacket)
         self.players[self.nextid] = player
         self.broadCastMessage(Message.SystemMessage(name + " connected."))
+        self.diffpacket[self.nextentityid] = e.serialize()
         self.makeStatePacket()
         print (name + ' connected.')
 
@@ -219,7 +222,8 @@ class Server:
             self.broadCastMessage(msg)
         elif msg['type'] == Message.MOVEMENT_MESSAGE:
             self.players[playerid].nextInput = PlayerInput.Move(msg['xdir'], msg['ydir'])
-#            self.movePlayer(playerid, msg['xdir'], msg['ydir'])
+        elif msg['type'] == Message.ACTION_MESSAGE:
+            self.players[playerid].nextInput = PlayerInput.Melee(None) # todo : add direction
         else:
             print 'Unhandled message type : ' + str(msg['type'])
 
@@ -228,6 +232,7 @@ class Server:
         self.lastsimtime = time.clock()
         while not self.packethandler.stop:
             # handle server events
+            self.diffpacket = {}
             while 1:
                 try:
                     (msg, sender) = self.inmessages.get(False)
@@ -240,7 +245,6 @@ class Server:
             dt = t - self.lastsimtime
             self.lastsimtime = t
             # handle individual player events
-            self.diffpacket = {}
             for p in self.players:
                 self.players[p].tick(dt)
 
@@ -248,6 +252,7 @@ class Server:
                self.makeStatePacket()
                self.changed = False
 
+            self.diffpacket = Message.DiffStateMessage(self.diffpacket)
             for p in self.players:
                 self.players[p].sendMessages()
 

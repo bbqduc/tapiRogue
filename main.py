@@ -130,7 +130,7 @@ class Game:
             self.typingpanel.handleKey(key)
             return False
         elif key.vk == libtcod.KEY_SPACE:
-           self.effects.append(SwordSwingEffect(self.player))
+           self.serverconnection.putMessageOutQueue(Message.ActionMessage('melee'))
            return False
 
         xdir = 0
@@ -194,8 +194,20 @@ class Game:
     
     def syncEntitiesFromDiffState(self, diff):
         for i in diff:
-           self.entities[i].x = diff[i]['x']
-           self.entities[i].y = diff[i]['y']
+           if i in self.entities:
+              if 'event' in diff[i]: # todo : fix purkka so you can have both event and x,y diff ?
+                 self.effects.append(SwordSwingEffect(self.entities[i]))# todo : make possible other events than melee swing
+              else:
+                 self.entities[i].x = diff[i]['x']
+                 self.entities[i].y = diff[i]['y']
+           else: # new entity created
+              e = diff[i]
+#              print 'got diff entry: ' + str(e)
+              newe = Entity(e['x'], e['y'], e['char'], libtcod.Color(e['color_r'], e['color_g'], e['color_b']), e['name'], i)
+              for p in e['properties']:
+                 newe.properties[p] = CreateProperty(p, e['properties'][p], self)
+              self.entities[i] = newe
+
         self.areamap.recomputeLights(self.player)
 
     def run(self):

@@ -1,5 +1,6 @@
 import libtcodpy as libtcod
 import tapirogueproperties as tapiRogueProperties
+import math
 
 class Entity:
     def __init__(self, x, y, char, color, name, entityid, blocks=True, properties={}):
@@ -26,8 +27,9 @@ class Entity:
         if not areamap.isBlocked(self.x+xdir, self.y+ydir):
             self.x += xdir
             self.y += ydir
-#            if self.lightsource:
-#                areamap.recomputeLights(self)
+            self.server.diffpacket[self.entityid] = {'x': self.x, 'y' : self.y}
+            self.server.changed = True
+
     def distanceTo(self, x, y):
         dx = x - self.x
         dy = y - self.y
@@ -39,7 +41,8 @@ class Entity:
     def serialize(self):
         props = {}
         for p in self.properties:
-            props[p] = self.properties[p].serialize()
+            if p != 'basicai':
+                props[p] = self.properties[p].serialize()
 
         return {'x': self.x,
                 'y': self.y,
@@ -51,7 +54,7 @@ class Entity:
                 'id': self.entityid,
                 'properties': props
                 }
-        
+    
 def CreateProperty(name, data, module):
     propclass = getattr(tapiRogueProperties, name)
     return propclass(data, module)

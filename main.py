@@ -445,8 +445,8 @@ class MessageConsumer:
             print('Message of unknown type ' + str(msgtype) + ' received.')
 
 game = Game()
-#game.connect('127.0.0.1', 5006)
-game.connect('bduc.org', 5005)
+game.connect('127.0.0.1', 5006)
+#game.connect('bduc.org', 5005)
 #libtcod.console_set_custom_font('arial.ttf', libtcod.FONT_TYPE_GREYSCALE | libtcod.FONT_LAYOUT_TCOD)
 
 

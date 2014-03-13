@@ -58,8 +58,7 @@ class Player:
        if self.nextInput['type'] != PlayerInput.INPUT_EMPTY:
           if self.actionCooldown <= 0:
              if self.nextInput['type'] == PlayerInput.INPUT_MOVE:
-                self.entity.move(self.server.areamap, self.nextInput['xdir'], self.nextInput['ydir']) # todo : just store the entity in self, lol
-                self.server.diffpacket[self.entityid] = { 'x': self.entity.x, 'y': self.entity.y  } # todo : dont need to send unchanged 
+                self.entity.move(self.server.areamap, self.nextInput['xdir'], self.nextInput['ydir'])
              elif self.nextInput['type'] == PlayerInput.INPUT_MELEE:
                 self.server.diffpacket[self.entityid] = { 'event': 'melee' } # todo : enum or something
 
@@ -104,8 +103,8 @@ class Player:
 class PacketHandler:
     def __init__(self, players, server):
         self.ip = '127.0.0.1'
-        self.ip = 'bduc.org'
-        self.port = 5005
+#        self.ip = 'bduc.org'
+        self.port = 5006
         self.players = players
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -179,15 +178,30 @@ class Server:
     def newConnection(self, socket, name):
         self.nextid += 1
         self.nextentityid += 1
-        e = Entity(15, 13, '@', libtcod.white, name, True)
+        e = Entity(15, 13, '@', libtcod.white, name, self.nextentityid, True)
         e.AddProperty('combat', {'hp': 20, 'max_hp':20, 'defense':2, 'power':5, 'deathfunction':None}, None)
+        e.server = self
         self.entities[self.nextentityid] = e
         player = Player(self.nextid, self.nextentityid, name, socket, self)
         self.enQueueMessage(player, self.staticstatepacket)
         self.players[self.nextid] = player
         self.broadCastMessage(Message.SystemMessage(name + " connected."))
         self.diffpacket[self.nextentityid] = e.serialize()
+        e.tick = player.tick
+
+        self.nextentityid += 1
+        enemy = Entity(55, 13, 'o', libtcod.magenta, 'orc', self.nextentityid,True)
+        enemy.AddProperty('combat', {'hp': 20, 'max_hp':20, 'defense':2, 'power':5, 'deathfunction':None}, None)
+        enemy.AddProperty('basicai', {}, None)
+        enemy.server = self
+        enemy.properties['basicai'].owner = enemy
+        enemy.properties['basicai'].activate(e)
+        enemy.tick = enemy.properties['basicai'].tick
+        self.entities[self.nextentityid] = enemy
+
+        self.diffpacket[self.nextentityid] = enemy.serialize() # todo : dont need to serialize ai !!
         self.makeStatePacket()
+
         print (name + ' connected.')
 
     def broadCastMessage(self, msg):
@@ -251,8 +265,10 @@ class Server:
             dt = t - self.lastsimtime
             self.lastsimtime = t
             # handle individual player events
-            for p in self.players:
-                self.players[p].tick(dt)
+            for e in self.entities:
+                self.entities[e].tick(dt)
+#            for p in self.players:
+#                self.players[p].tick(dt)
 
             if self.changed:
                self.makeStatePacket()

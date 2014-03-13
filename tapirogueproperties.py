@@ -44,8 +44,10 @@ class combat(Property):
 
 
 class basicai(Property):
-    def __init__(self, data):
+    def __init__(self, data, module):
         Property.__init__(self, data)
+        self.active = False
+        self.actionCooldown = 3.0
 
     def takeTurn(self, areamap, player):
         if libtcod.map_is_in_fov(areamap.fovMap, self.owner.x, self.owner.y):
@@ -62,3 +64,27 @@ class basicai(Property):
         dy = int(round(dy / distance))
 
         self.owner.move(areamap, dx,dy)
+
+    def activate(self, target):
+        self.target = target
+        self.actionCooldown = 0.0
+        self.active = True
+        
+
+    def tick(self, dt):
+#        if not self.active:
+#            return
+
+        if self.actionCooldown > 0:
+            self.actionCooldown -= dt
+
+        if self.actionCooldown > 0:
+            return
+
+        self.actionCooldown = 3.0
+        distance = self.owner.distanceTo(self.target.x, self.target.y)
+        if distance >= 2:
+            self.moveTowards(self.target.x, self.target.y, self.owner.server.areamap)
+        
+#        if self.owner.distanceTo(target.x, target.y) > 11:
+#            self.active = False
